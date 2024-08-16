@@ -1,0 +1,2 @@
+Label	Cleavage_proportion_1	Cleavage_proportion_2	Cleavage_proportion_3	Cleavage_proportion_4	Cleavage_proportion_5	Cleavage_proportion_6	Cleavage_proportion_7	Cleavage_proportion_8	Cleavage_proportion_9	Cleavage_proportion_10	Cleavage_proportion_11
+M	0.365764447695684	0.40975973179363	1.60753880266075	1.0470242468773	0.513761467889908	2.93381037567084	0.500894454382826	0.440366972477064	0.404114621601763	0.461936437546194	0.81951946358726

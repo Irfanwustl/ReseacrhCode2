@@ -1,0 +1,57 @@
+#Software requirement
+bedtools v2.27.1
+R version 4.0.5 (R package: data.table)
+perl v5.16.3
+python version: 3.9.12 (python package: numpy, sklearn, torch）
+
+# Part1: Processing CpG.bed and Seq.bed #
+
+# Usage #
+./data_process.sh Demo_data/CpG.bed Demo_data/Seq.bed M
+
+Input:
+1) CpG.bed
+	This file should be tab separated with the following columns: chr, start, end, sequence, methylation density, label
+	The coordinates are the locations of 2-base CpG sites
+	The sequence should be the 12nt (upstream 5nt + CG + downstream 5nt) genomic context from the reference genome.
+	Methylation density and labels will be used for downstream analysis
+        For methylation prediction with the CNN model, please fill the label with M (i.e., methylated) or U (i.e., unmethylated) according to your criteria.
+        If the cleavage profile of CpGs of interest is needed, please fill the label with the desired label and enter the label in the usage (e.g., M).
+2) Seq.bed
+	This is a file includes the coordinates of cfDNA fragments.
+
+#Demo input data: Demo_data/CpG.bed Demo_data/Seq.bed
+
+Output:
+1) fragma_interest.txt
+        This is a summarised cleavage profile of sites of interest in CpG.bed (e.g., sites with label M)
+2) fragma_all.txt
+	This file contains the cleavage profile of each site in CpG.bed
+	PLEASE BE NOTED: this is a result without QC, that means some CpG sites may not have enough reads for downstream analysis
+3) fragma.txt
+	This file contains the cleavage profile of each site in CpG.bed with QC filtration.
+	Inclusive criteria: At least 1 end at 0 or -1 position in the Waston strand. At least 1 end at 0 or -1 position in the Crick strand. At least 10 ends at 0 or -1 position when combining the Waston and Crick strands
+
+
+# Part2: Training of the CNN model #
+#For CNN trainning and testing, GPU is needed.
+# Usage #
+./CNN.sh Demo_data/Feature_Label_CNN.txt
+
+Input:
+1) fragma.txt (creatd in Part1)
+
+#Demo data:
+#Feature_Label_CNN.txt is the data used to demonstrate the model training and testing.
+#Randomly split data into train, valid, and test sets. train: valid: test = 70%:15%:15%
+
+Output:
+1) log.txt
+        Log of training and testing process, including training, validation and testing auc value.
+2) best_model.pt
+        Well trainined model file.
+3) testResult.txt 
+        This file should be tab separated with the following columns: chr, start, end, label, output, predict
+        The coordinates are the locations of upstream 5nt + CG + downstream 5nt of the testing CpG sites       
+        Label: 1 (i.e., methylated) or 0 (i.e., unmethylated) according to your criteria (from the input file)
+        Output and predict are the score and prediction (with default cut-off) of testing data.
