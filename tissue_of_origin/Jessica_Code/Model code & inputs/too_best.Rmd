@@ -1,0 +1,274 @@
+---
+title: "CNA"
+author: "Jessica Linford"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(data.table)
+library(tidyverse)
+library(caret)
+library(MLmetrics)
+library(pROC)
+library(randomForest)
+library(doParallel)
+```
+
+```{r}
+# Function to train model
+train_model <- function(train_data, val_data, down_sample = FALSE, pre_process = NULL) {
+  # Setting up train control
+  train_control <- if (down_sample) {
+    trainControl(method = "repeatedcv",
+                 number = 10,
+                 repeats = 5,
+                 savePredictions = "final",
+                 sampling = "down",
+                 classProbs = TRUE,
+                 summaryFunction = multiClassSummary)
+  } else {
+    trainControl(method = "repeatedcv",
+                 number = 10,
+                 repeats = 5,
+                 savePredictions = "final",
+                 classProbs = TRUE,
+                 summaryFunction = multiClassSummary)
+  }
+  
+  # Determine the number of predictors and the mtry range
+  total_predictors <- ncol(train_data) - 1
+  max_mtry <- min(total_predictors, sqrt(total_predictors) * 2)
+  grid <- expand.grid(mtry = seq(2, max_mtry, by = 1))
+  
+  # Parallel processing setup
+  cl <- makeCluster(6)
+  registerDoParallel(cl)
+  
+  # Model training
+  set.seed(757)
+  model <- train(cohort ~ .,
+                 data = train_data,
+                 preProcess = pre_process,
+                 method = "rf",
+                 trControl = train_control,
+                 tuneGrid = grid,
+                 family = "multinomial",
+                 importance = TRUE)
+  
+  # Stop parallel processing
+  stopCluster(cl)
+  
+  return(model)
+}
+
+# Function to plot ROC curves
+plot_roc_curves <- function(model, val_data, main = "ROC Curves for Each Class") {
+  # Generate test predictions
+  val_predictions <- predict(model, val_data, type = "prob")
+
+  # Generate ROC curves
+  roc_list <- list()
+  auc_values <- c()
+  for (class in levels(val_data$cohort)) {
+    binary_response <- ifelse(val_data$cohort == class, class, "Other")
+    binary_response <- factor(binary_response, levels = c("Other", class))
+    roc_obj <- roc(response = binary_response, predictor = val_predictions[, class])
+    roc_list[[class]] <- roc_obj
+    auc_values[class] <- auc(roc_obj)
+  }
+
+  # Calculate average AUC
+  average_auc <- mean(auc_values)
+
+  # Plot combined ROC curves
+  plot(roc_list[[1]], col = 1, main = main, print.auc = FALSE, legacy.axes = TRUE)
+  for (i in 2:length(roc_list)) {
+    plot(roc_list[[i]], col = i, add = TRUE, print.auc = FALSE, legacy.axes = TRUE)
+  }
+
+  # Create legend with AUC values and average AUC
+  legend_text <- c(paste("Average AUC:", round(average_auc, 3)),
+                   paste0(names(roc_list), " (AUC ", round(auc_values, 3), ")"))
+
+  legend("bottomright", legend = legend_text, col = c(NA, 1:length(roc_list)), lwd = 2, 
+         lty = c(NA, rep(1, length(roc_list))))
+}
+
+# Function to create confusion matrix
+create_confusion_matrix <- function(model, val_data) {
+  # Generate class predictions
+  val_predictions_class <- predict(model, val_data)
+
+  # Create confusion matrix
+  confusion <- confusionMatrix(val_predictions_class, val_data$cohort)
+  print(confusion)
+}
+
+# Function to calculate variable importance
+calculate_variable_importance <- function(model) {
+  # Calculate variable importance
+  var_importance <- varImp(model, scale = FALSE)
+  print(var_importance)
+}
+
+custom_preprocess <- function(train_data, test_data) {
+  pca_data_train <- train_data[, pca_predictors]
+  pca_data_test <- test_data[, pca_predictors]
+  non_pca_data_train <- train_data[, non_pca_predictors]
+  non_pca_data_test <- test_data[, non_pca_predictors]
+  
+  pca_data_train <- scale(pca_data_train)
+  pca_data_test <- scale(pca_data_test, 
+                         center = attr(pca_data_train, "scaled:center"), 
+                         scale = attr(pca_data_train, "scaled:scale"))
+  
+  preProc <- preProcess(pca_data_train, method = c("center", "scale", "pca"), thresh = 0.9)
+  pca_transformed_train <- predict(preProc, pca_data_train)
+  pca_transformed_test <- predict(preProc, pca_data_test)
+  
+  non_pca_data_train <- scale(non_pca_data_train)
+  non_pca_data_test <- scale(non_pca_data_test, 
+                             center = attr(non_pca_data_train, "scaled:center"), 
+                             scale = attr(non_pca_data_train, "scaled:scale"))
+  
+  combined_train <- cbind(pca_transformed_train, non_pca_data_train)
+  combined_test <- cbind(pca_transformed_test, non_pca_data_test)
+  
+  combined_train <- data.frame(combined_train)
+  combined_test <- data.frame(combined_test)
+  
+  combined_train$cohort <- train_data$cohort
+  combined_test$cohort <- test_data$cohort
+  
+  return(list(train = combined_train, test = combined_test))
+}
+```
+
+```{r data, include=FALSE}
+# Load data
+libraries <- read_tsv("~/Documents/Bladder/endpoint_750/libraries.tsv", show_col_types = F) %>% 
+  select(-file, - library_type, - isolation_type)
+
+cna <- read.csv("~/Documents/ichorCNA/Data/CNA_no_trim_low_1Mb.csv")
+
+cna_wide <- cna %>% 
+  pivot_wider(names_from = c(chr, start, end), values_from = logR_Copy_Number) %>% 
+  right_join(libraries, by = "library") %>% 
+  mutate(cohort = factor(cohort, levels = c("Healthy", "Bladder", "Prostate", "RCC"))) %>% 
+  filter(serial == 0 | (serial == 1 & cohort == "RCC")) %>%
+  filter(duplicate == 0 | (duplicate ==  1 & batch != 1)) %>%
+  select(-c(serial, duplicate, batch)) %>% 
+  column_to_rownames("library") %>% 
+  select(where(~ all(is.finite(.x))))
+
+arm_z <- read_tsv("~/Documents/Bladder/endpoint_750/arm_z.tsv")
+
+arm_z_wide <- arm_z %>%
+  right_join(libraries, by = "library") %>%
+  filter(serial == 0 | (serial == 1 & cohort == "RCC")) %>%
+  filter(duplicate == 0 | (duplicate ==  1 & batch != 1)) %>%
+  select(-c(count, total, prop, serial, duplicate, batch)) %>%
+  pivot_wider(names_from = c(chr, arm), values_from = z) %>%
+  mutate(cohort = factor(cohort, levels = c("Healthy", "Bladder", "Prostate", "RCC"))) %>% 
+  column_to_rownames("library")
+
+ratios <- read_tsv("~/Documents/Bladder/endpoint_750/ratios_150.tsv")
+
+ratios_wide <- ratios %>% 
+  right_join(libraries, by = "library") %>% 
+  filter(serial == 0 | (serial == 1 & cohort == "RCC")) %>%
+  filter(duplicate == 0 | (duplicate == 1 & batch != 1)) %>%
+  select(-c(fract, serial, duplicate, batch)) %>% 
+  pivot_wider(names_from = c(chr, start, end), values_from = ratio.centered) %>% 
+  mutate(cohort = factor(cohort, levels = c("Healthy", "Bladder", "Prostate", "RCC"))) %>% 
+  column_to_rownames("library")
+```
+
+# CNA model - PCA on training data + downsampling to correct class imbalance
+```{r}
+set.seed(757)
+
+train_index_cna <- createDataPartition(cna_wide$cohort, p = 0.7, list = FALSE, times = 1)
+
+train_data_cna <- cna_wide[train_index_cna,]
+val_data_cna <- cna_wide[-train_index_cna,]
+
+model_cna <- train_model(train_data_cna, val_data_cna, down_sample = TRUE, 
+                         pre_process = c("center", "scale", "nzv", "pca"))
+
+plot_roc_curves(model_cna, val_data_cna, main = "IchorCNA with PCA & Downsampling")
+
+create_confusion_matrix(model_cna, val_data_cna)
+```
+
+# Chromosome Arm z-score Model
+```{r}
+set.seed(757)
+
+train_index_armz <- createDataPartition(arm_z_wide$cohort, p = .7, list = FALSE, times = 1)
+
+train_data_armz <- arm_z_wide[train_index_armz,]
+val_data_armz <- arm_z_wide[-train_index_armz,]
+
+model_armz <- train_model(train_data_armz, val_data_armz, down_sample = FALSE, 
+                          pre_process = c("center", "scale", "nzv"))
+
+plot_roc_curves(model_armz, val_data_armz, main = "Chromosome Arm z-Score Model")
+
+create_confusion_matrix(model_armz, val_data_armz)
+```
+
+# Fragment Length Ratio Model - PCA on Training Data
+```{r}
+set.seed(757)
+
+train_index_ratios <- createDataPartition(ratios_wide$cohort, p = 0.7, list = FALSE, times = 1)
+
+train_data_ratios <- ratios_wide[train_index_ratios,]
+val_data_ratios <- ratios_wide[-train_index_ratios,]
+
+model_ratios <- train_model(train_data_ratios, val_data_ratios, down_sample = FALSE, 
+                            pre_process = c("center", "scale", "nzv", "pca"))
+
+plot_roc_curves(model_ratios, val_data_ratios, main = "Fragment Length Ratios with PCA, Cutpoint 150")
+
+create_confusion_matrix(model_ratios, val_data_ratios)
+```
+
+# Combined Fragment Length Ratio / Chromosome Arm z-Score Model
+```{r}
+# Extract the pre-processed data for fragment length ratios and chromosome arm z-scores
+preProcess_obj_armz <- model_armz$preProcess
+preprocessed_train_data_armz <- predict(preProcess_obj_armz, train_data_armz) %>% 
+  rownames_to_column("library")
+preprocessed_val_data_armz <- predict(preProcess_obj_armz, val_data_armz) %>% 
+  rownames_to_column("library")
+
+preProcess_obj_ratios <- model_ratios$preProcess
+preprocessed_train_data_ratios <- predict(preProcess_obj_ratios, train_data_ratios) %>% 
+  rownames_to_column("library")
+preprocessed_val_data_ratios <- predict(preProcess_obj_ratios, val_data_ratios) %>% 
+  rownames_to_column("library")
+
+# Join to make data frame for combined model
+train_data_comb <- left_join(preprocessed_train_data_armz, preprocessed_train_data_ratios,
+                             by = c("library", "cohort")) %>% 
+  column_to_rownames("library")
+val_data_comb <- left_join(preprocessed_val_data_armz, preprocessed_val_data_ratios,
+                             by = c("library", "cohort")) %>% 
+  column_to_rownames("library")
+```
+
+```{r}
+set.seed(757)
+
+model_comb <- train_model(train_data_comb, val_data_comb, down_sample = FALSE, 
+                         pre_process = NULL)
+
+plot_roc_curves(model_comb, val_data_comb, main = "Fragment Length Ratios PCA + Chromosome Arm z-Score, Cutpoint 150")
+
+create_confusion_matrix(model_comb, val_data_comb)
+```
+

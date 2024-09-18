@@ -11,7 +11,7 @@ def process_file(args):
     subdir, file = os.path.split(file_path)
     parts = file.split('_')
     sample_name = 'Sample_' + parts[0]  # Adjust index if necessary
-    read_number = parts[3]  # Adjust index if necessary
+    read_number = parts[4]  # Adjust index if necessary
 
     new_file_name = f"{sample_name}_{read_number}.fastq.gz"
     new_file_path = os.path.join(output_folder, sample_name, new_file_name)
